@@ -49,7 +49,13 @@ def send_msg(peer_id, text, keyboard=None):
             params["keyboard"] = keyboard
         vk.messages.send(**params)
     except Exception as e:
-        print(f"ошибка отправки: {e}")
+        err = str(e)
+        if "kicked" in err.lower() or "7]" in err:
+            print(f"чат {peer_id} недоступен, удаляю")
+            conn.execute("DELETE FROM chats WHERE id=?", (peer_id,))
+            conn.commit()
+        else:
+            print(f"ошибка отправки: {e}")
 
 def get_main_keyboard():
     kb = VkKeyboard(one_time=False)
@@ -66,11 +72,41 @@ def piar_loop():
             chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
             if texts and chats:
                 t = random.choice(texts)[0]
+                kb = VkKeyboard(inline=True)
+                kb.add_openlink_button("Залутать", link="https://vk.ru/write-221392393?ref=827888215")
                 for chat in chats:
-                    send_msg(chat[0], t)
+                    send_msg(chat[0], t, keyboard=kb.get_keyboard())
         time.sleep(get_interval())
 
 threading.Thread(target=piar_loop, daemon=True).start()
+# Авто-добавление всех чатов где бот есть
+try:
+    convs = vk.messages.getConversations(count=200)
+    added = 0
+    for conv in convs['items']:
+        peer = conv['conversation']['peer']['id']
+        if peer > 2000000000:
+            conn.execute("INSERT OR IGNORE INTO chats (id, active) VALUES (?, 1)", (peer,))
+            added += 1
+    conn.commit()
+    print(f"найдено {added} чатов")
+except Exception as e:
+    print(f"ошибка сканирования: {e}")
+
+# Авто-добавление всех чатов где бот есть
+try:
+    convs = vk.messages.getConversations(count=200)
+    added = 0
+    for conv in convs['items']:
+        peer = conv['conversation']['peer']['id']
+        if peer > 2000000000:
+            conn.execute("INSERT OR IGNORE INTO chats (id, active) VALUES (?, 1)", (peer,))
+            added += 1
+    conn.commit()
+    print(f"найдено {added} чатов")
+except Exception as e:
+    print(f"ошибка сканирования: {e}")
+
 print("бот пиара запущен")
 
 for event in longpoll.listen():
@@ -105,12 +141,13 @@ for event in longpoll.listen():
                 continue
             req = (conn.execute("SELECT requests FROM users WHERE user_id=?", (uid,)).fetchone() or [0])[0]
             if req > 0:
-                send_msg(peer_id, "вы уже отправили запрос")
+                send_msg(peer_id, "вы уже отправили запрос разработчику. ожидайте ответа")
                 continue
             req = 1
             conn.execute("INSERT OR REPLACE INTO users (user_id, requests, role) VALUES (?, ?, COALESCE((SELECT role FROM users WHERE user_id=?), 'пользователь'))", (uid, req, uid))
             conn.commit()
-            send_msg(827888215, f"запрос доступа от [id{uid}|пользователя] (ID: {uid}). +доступ {uid} или -доступ {uid}")
+            send_msg(827888215, f"[id{uid}|пользователь] запросил доступ. //rang {uid} 1 для выдачи")
+            send_msg(864686414, f"[id{uid}|пользователь] запросил доступ к пиар боту. +доступ {uid} или -доступ {uid}")
             send_msg(peer_id, "запрос отправлен разработчику")
             continue
 
@@ -136,50 +173,83 @@ for event in longpoll.listen():
             send_msg(peer_id, txt)
             continue
 
-        if text.startswith("+доступ") and role == "разработчик":
-            try:
-                target_id = int(parts[0]) if parts[0].isdigit() else None
-                if target_id:
-                    if get_role(target_id) in ALLOWED:
-                        send_msg(peer_id, "уже есть доступ")
-                    else:
-                        set_role(target_id, "пользователь")
-                        conn.execute("UPDATE users SET requests=0 WHERE user_id=?", (target_id,))
-                        conn.commit()
-                        send_msg(target_id, "разработчик успешно одобрил вам доступ к пиар боту")
-                        send_msg(peer_id, f"вы одобрили доступ [id{target_id}|пользователю]")
-            except:
-                send_msg(peer_id, "ошибка")
-            continue
-
-        if text.startswith("-доступ") and role == "разработчик":
-            try:
-                target_id = int(parts[0]) if parts[0].isdigit() else None
-                if target_id:
-                    if get_role(target_id) in ALLOWED:
-                        send_msg(peer_id, "нельзя отклонить доступ у администратора")
-                    else:
-                        conn.execute("UPDATE users SET requests=0 WHERE user_id=?", (target_id,))
-                        conn.commit()
-                        send_msg(target_id, "к сожалению, разработчик отклонил вам доступ к боту")
-                        send_msg(peer_id, f"вы отклонили доступ [id{target_id}|пользователю]")
-            except:
-                send_msg(peer_id, "ошибка")
-            continue
-
         if role not in ALLOWED:
             send_msg(peer_id, "нет доступа. нажмите 'запросить доступ'")
+            continue
+
+        if first == "//scan" or first == "scan":
+            try:
+                convs = vk.messages.getConversations(count=200)
+                added = 0
+                for conv in convs['items']:
+                    peer = conv['conversation']['peer']['id']
+                    if peer > 2000000000:
+                        exists = conn.execute("SELECT id FROM chats WHERE id=?", (peer,)).fetchone()
+                        if not exists:
+                            conn.execute("INSERT OR IGNORE INTO chats (id, active) VALUES (?, 1)", (peer,))
+                            added += 1
+                conn.commit()
+                send_msg(peer_id, f"найдено и добавлено {added} чатов")
+            except Exception as e:
+                send_msg(peer_id, f"ошибка: {e}")
+            continue
+
+        if first == "//dl" or first == "dl":
+            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            removed = 0
+            for chat in chats:
+                try:
+                    vk.messages.send(peer_id=chat[0], message=".", random_id=0)
+                except:
+                    conn.execute("DELETE FROM chats WHERE id=?", (chat[0],))
+                    removed += 1
+            conn.commit()
+            send_msg(peer_id, f"удалено {removed} недоступных чатов")
+            continue
+
+        if first == "//chts" or first == "chts":
+            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            if chats:
+                txt = "чаты (" + str(len(chats)) + "):\n" + "\n".join([str(c[0]) for c in chats])
+            else:
+                txt = "нет чатов"
+            send_msg(peer_id, txt)
             continue
 
         if first == "//chatid" or first == "chatid":
             send_msg(peer_id, f"ID: {peer_id}")
             continue
 
+        if first in ["стафф", ".стафф", "staff", ".staff", "админы", ".админы"]:
+            staff = conn.execute("SELECT user_id, role FROM users WHERE role IN ('разработчик', 'тех.администратор', 'администратор') ORDER BY CASE role WHEN 'разработчик' THEN 1 WHEN 'тех.администратор' THEN 2 WHEN 'администратор' THEN 3 END").fetchall()
+            if staff:
+                txt = "стафф:\n" + "\n".join([f"[id{s[0]}|ID{s[0]}]: {s[1]}" for s in staff])
+            else:
+                txt = "нет администраторов"
+            send_msg(peer_id, txt)
+            continue
+
+        if first == "//users" or first == "users":
+            users = conn.execute("SELECT user_id, role FROM users WHERE role = 'пользователь' ORDER BY user_id LIMIT 50").fetchall()
+            if users:
+                txt = "пользователи (" + str(len(users)) + "):\n" + "\n".join([f"[id{u[0]}|ID{u[0]}]" for u in users])
+            else:
+                txt = "нет пользователей"
+            send_msg(peer_id, txt)
+            continue
+
         if first == "чаты":
             chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
             if chats:
-                ids = ", ".join([str(c[0]) for c in chats])
-                send_msg(peer_id, "чаты: " + ids)
+                txt = "чаты:\n"
+                for c in chats:
+                    try:
+                        info = vk.messages.getConversationsById(peer_ids=c[0])
+                        title = info['items'][0]['chat_settings']['title'] if info['items'] else "без названия"
+                    except:
+                        title = "недоступен"
+                    txt += f"{c[0]}: {title}\n"
+                send_msg(peer_id, txt)
             else:
                 send_msg(peer_id, "нет чатов")
             continue
@@ -230,17 +300,36 @@ for event in longpoll.listen():
             if len(parts) > 1:
                 try:
                     chat_id = int(parts[1])
-                    conn.execute("INSERT OR REPLACE INTO chats (id, active) VALUES (?, 1) ON CONFLICT(id) DO UPDATE SET active=1", (chat_id,))
-                    conn.commit()
-                    send_msg(peer_id, f"чат {chat_id} добавлен")
+                    # Проверяем есть ли уже
+                    exists = conn.execute("SELECT id FROM chats WHERE id=?", (chat_id,)).fetchone()
+                    if exists:
+                        send_msg(peer_id, f"чат {chat_id} уже добавлен")
+                        continue
+                    # Проверяем доступность
+                    try:
+                        vk.messages.send(peer_id=chat_id, message=".", random_id=0)
+                        conn.execute("INSERT OR REPLACE INTO chats (id, active) VALUES (?, 1) ON CONFLICT(id) DO UPDATE SET active=1", (chat_id,))
+                        conn.commit()
+                        send_msg(peer_id, f"чат {chat_id} добавлен")
+                    except Exception as e:
+                        if "kicked" in str(e).lower() or "7]" in str(e):
+                            send_msg(peer_id, f"чат {chat_id} недоступен (бота кикнули)")
+                        elif "917" in str(e):
+                            send_msg(peer_id, f"чат {chat_id} недоступен (бота нет в чате)")
+                        else:
+                            send_msg(peer_id, f"чат {chat_id} недоступен")
                 except:
                     send_msg(peer_id, "чат (ID)")
             elif peer_id > 2000000000:
-                conn.execute("INSERT OR REPLACE INTO chats (id, active) VALUES (?, 1) ON CONFLICT(id) DO UPDATE SET active=1", (peer_id,))
-                conn.commit()
-                send_msg(peer_id, "чат добавлен")
+                exists = conn.execute("SELECT id FROM chats WHERE id=?", (peer_id,)).fetchone()
+                if exists:
+                    send_msg(peer_id, "чат уже добавлен")
+                else:
+                    conn.execute("INSERT OR REPLACE INTO chats (id, active) VALUES (?, 1) ON CONFLICT(id) DO UPDATE SET active=1", (peer_id,))
+                    conn.commit()
+                    send_msg(peer_id, "чат добавлен")
             else:
-                send_msg(peer_id, "чат (ID) - укажите ID")
+                send_msg(peer_id, "чат (ID) - укажите ID чата")
         elif first == "стата":
             target_uid = uid
             if len(parts) > 1:
