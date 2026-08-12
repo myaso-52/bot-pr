@@ -6,29 +6,46 @@ import time
 import threading
 import random
 import re
+import json
 import config
+from datetime import datetime, timezone, timedelta as td
 
 vk_session = vk_api.VkApi(token=config.TOKEN)
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 
 conn = sqlite3.connect("pr.db", check_same_thread=False)
-conn.execute("CREATE TABLE IF NOT EXISTS texts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT)")
 conn.execute("CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY, active INTEGER DEFAULT 1)")
 conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-conn.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, role TEXT DEFAULT 'пользователь', requests INTEGER DEFAULT 0)")
+conn.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, role TEXT DEFAULT 'нет_доступа', requests INTEGER DEFAULT 0, ban_until REAL DEFAULT 0, ban_reason TEXT, ban_by TEXT, reg_date TEXT)")
+conn.execute("CREATE TABLE IF NOT EXISTS user_texts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, text TEXT)")
+try:
+    conn.execute("ALTER TABLE users ADD COLUMN ban_until REAL DEFAULT 0")
+except: pass
+try:
+    conn.execute("ALTER TABLE users ADD COLUMN ban_reason TEXT")
+except: pass
+try:
+    conn.execute("ALTER TABLE users ADD COLUMN ban_by TEXT")
+except: pass
+try:
+    conn.execute("ALTER TABLE users ADD COLUMN reg_date TEXT")
+except: pass
 conn.commit()
 
 conn.execute("INSERT OR IGNORE INTO users (user_id, role) VALUES (827888215, 'разработчик')")
 conn.execute("INSERT OR IGNORE INTO users (user_id, role) VALUES (864686414, 'разработчик')")
 conn.commit()
 
-ROLES = {4: "разработчик", 3: "тех.администратор", 2: "администратор", 1: "пользователь", -1: "заблокирован"}
 ALLOWED = ["разработчик", "тех.администратор", "администратор", "пользователь"]
 
 def get_role(uid):
-    row = conn.execute("SELECT role FROM users WHERE user_id=?", (uid,)).fetchone()
-    return row[0] if row else "пользователь"
+    row = conn.execute("SELECT role, ban_until FROM users WHERE user_id=?", (uid,)).fetchone()
+    if row:
+        if row[1] and row[1] > time.time():
+            return "заблокирован"
+        return row[0]
+    return "нет_доступа"
 
 def set_role(uid, role):
     conn.execute("INSERT OR REPLACE INTO users (user_id, role) VALUES (?, ?)", (uid, role))
@@ -57,29 +74,22 @@ def send_msg(peer_id, text, keyboard=None):
         else:
             print(f"ошибка отправки: {e}")
 
-def get_main_keyboard():
-    kb = VkKeyboard(one_time=False)
-    kb.add_button("Помощь", color=VkKeyboardColor.PRIMARY)
-    kb.add_button("Статистика", color=VkKeyboardColor.PRIMARY)
-    kb.add_line()
-    kb.add_button("Запросить доступ", color=VkKeyboardColor.POSITIVE)
-    return kb.get_keyboard()
-
 def piar_loop():
     while True:
         if get_active():
-            texts = conn.execute("SELECT text FROM texts").fetchall()
+            user_texts = conn.execute("SELECT user_id, text FROM user_texts ORDER BY RANDOM()").fetchall()
             chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
-            if texts and chats:
-                t = random.choice(texts)[0]
-                kb = VkKeyboard(inline=True)
-                kb.add_openlink_button("Залутать", link="https://vk.ru/write-221392393?ref=827888215")
-                for chat in chats:
-                    send_msg(chat[0], t, keyboard=kb.get_keyboard())
+            if user_texts and chats:
+                for uid_text, t in user_texts:
+                    kb = VkKeyboard(inline=True)
+                    kb.add_openlink_button("Залутать", link="https://vk.ru/write-221392393?ref=827888215")
+                    for chat in chats:
+                        send_msg(chat[0], t, keyboard=kb.get_keyboard())
+                    time.sleep(1)
         time.sleep(get_interval())
 
 threading.Thread(target=piar_loop, daemon=True).start()
-# Авто-добавление всех чатов где бот есть
+
 try:
     convs = vk.messages.getConversations(count=200)
     added = 0
@@ -98,50 +108,24 @@ print("бот пиара запущен")
 last_msg = ("", 0, 0)
 for event in longpoll.listen():
     if event.type == VkEventType.MESSAGE_NEW and event.to_me:
-        # Защита от дублей: одинаковый текст от того же юзера за 1 сек
-        now = time.time()
-        if event.text == last_msg[0] and event.user_id == last_msg[1] and now - last_msg[2] < 3:
+        now_ts = time.time()
+        if event.text == last_msg[0] and event.user_id == last_msg[1] and now_ts - last_msg[2] < 3:
             continue
-        last_msg = (event.text, event.user_id, now)
+        last_msg = (event.text, event.user_id, now_ts)
         peer_id = event.peer_id
         uid = event.user_id
-        text = event.text
+        text = event.text.strip()
         role = get_role(uid)
         print(f"[{uid}|{role}] {text}")
 
-        text_lower = text.lower().strip()
+        text_lower = text.lower()
+        if text_lower.startswith("."):
+            text_lower = text_lower[1:]
+        parts = text_lower.split()
+        first = parts[0] if parts else ""
 
-        if text_lower in ["начать", "меню", "привет", "старт"]:
-            if role in ALLOWED:
-                send_msg(peer_id, "бот для пиара. выберите действие:", keyboard=get_main_keyboard())
-            elif role == "заблокирован":
-                send_msg(peer_id, "вы заблокированы")
-            else:
-                send_msg(peer_id, "нет доступа. добавьте бота в 3 чата от 200 человек и отпишите @dimo4kaenergy")
-            continue
-
-        if text in ["Помощь", ".помощь"]:
-            if role not in ALLOWED:
-                send_msg(peer_id, "нет доступа. чтобы получить - добавьте бота в 3 пиар чата от 200 человек и отпишите @dimo4kaenergy")
-                continue
-            help_text = "📋 КОМАНДЫ ПИАР БОТА:\n\n📝 пиар (текст) - добавить текст для рассылки\n📋 список - показать все тексты\n🗑 удалить (номер) - удалить текст\n⏱ интервал (сек) - частота постинга\n📊 инфо - статус и кол-во чатов/текстов\n📊 //info - подробная статистика\n⏹ стоп - остановить пиар\n▶️ старт - запустить пиар\n💬 чат (ID) - добавить чат вручную\n📋 чаты - список чатов с названиями\n🔍 scan - найти все доступные чаты\n🗑 //dl - удалить недоступные чаты\n🆔 chatid - узнать ID чата\n👤 стата (ID) - профиль пользователя"
-            if role == "разработчик":
-                help_text += "\n\n🔧 ДЛЯ РАЗРАБОТЧИКА:\n👥 стафф - список администрации\n👥 users - все пользователи\n📩 запросы - запросы доступа\n🔑 rang (ID) (ранг) - выдать роль\n❌ delacc (ID) - удалить пользователя"
-            help_text += "\n\n❓ помощь - это сообщение"
-            send_msg(peer_id, help_text)
-            continue
-
-        if text == "Статистика":
-            if role not in ALLOWED:
-                send_msg(peer_id, "нет доступа. чтобы получить - добавьте бота в 3 пиар чата от 200 человек и отпишите @dimo4kaenergy")
-                continue
-            chats_count = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
-            texts_count = conn.execute("SELECT COUNT(*) FROM texts").fetchone()[0]
-            active_status = "запущен" if get_active() else "остановлен"
-            send_msg(peer_id, f"чатов: {chats_count}\nтекстов: {texts_count}\nстатус: {active_status}\nинтервал: {get_interval()}с")
-            continue
-
-        if text == "Запросить доступ":
+        # Кнопка Запросить доступ
+        if text_lower in ["запросить доступ", "запросить"]:
             if role in ALLOWED:
                 send_msg(peer_id, "у вас уже есть доступ")
             elif role == "заблокирован":
@@ -149,9 +133,9 @@ for event in longpoll.listen():
             else:
                 req = (conn.execute("SELECT requests FROM users WHERE user_id=?", (uid,)).fetchone() or [0])[0]
                 if req > 0:
-                    send_msg(peer_id, "запрос уже отправлен. ожидайте")
+                    send_msg(peer_id, "запрос уже отправлен")
                     continue
-                conn.execute("INSERT OR REPLACE INTO users (user_id, requests, role, reg_date) VALUES (?, 1, 'пользователь', ?)", (uid, time.strftime('%d.%m.%Y')))
+                conn.execute("INSERT OR REPLACE INTO users (user_id, requests, reg_date, role) VALUES (?, 1, ?, COALESCE((SELECT role FROM users WHERE user_id=?), 'нет_доступа'))", (uid, time.strftime('%d.%m.%Y'), uid))
                 conn.commit()
                 send_msg(peer_id, "запрос отправлен разработчику")
                 try:
@@ -159,60 +143,188 @@ for event in longpoll.listen():
                     name = f"{u['first_name']} {u['last_name']}"
                 except:
                     name = f"ID {uid}"
-                send_msg(827888215, f"{name} запросил доступ\n\nодобрить: rang 1 {uid}\nотказать: rang 0 {uid}")
+                send_msg(827888215, f"{name} запросил доступ\n\n✅ Одобрить: rang 1 {uid}\n❌ Отказать: rang 0 {uid}")
             continue
 
-        # Команды без префикса
-        cmd = text.strip().lower()
-        if cmd.startswith("."):
-            cmd = cmd[1:]
-        parts = cmd.split()
-        if not parts:
+        # Помощь
+        if first in ["помощь", "хелп", "help", "начать", "меню", "привет", "старт"]:
+            if role not in ALLOWED:
+                send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
+                continue
+            help_text = "📋 КОМАНДЫ ПИАР БОТА:\n\n📝 пиар (текст) - добавить текст\n📋 список - ваши тексты\n🗑 удалить (номер) - удалить текст\n⏱ интервал (сек) - частота\n📊 инфо - статус\n⏹ стоп - остановить\n▶️ старт - запустить\n💬 чат (ID) - добавить чат\n📋 чаты - список чатов\n🔍 scan - найти чаты\n🗑 //dl - удалить недоступные\n🆔 chatid - ID чата\n👤 стата (ID) - профиль"
+            if role == "разработчик":
+                help_text += "\n\n🔧 ДЛЯ РАЗРАБОТЧИКА:\n👥 стафф - администрация\n👥 users - пользователи\n📩 запросы - запросы\n🔑 rang (ранг) (ID) - роль\n📨 sms (ссылка) (текст) - смс\n🔨 //ban (срок) (ссылка) (причина)\n📋 //banlist - список банов\n❌ delacc (ID) - удалить"
+            send_msg(peer_id, help_text)
             continue
 
-        first = parts[0]
+        # Статистика
+        if first in ["статистика", "stats", "stat"]:
+            if role not in ALLOWED:
+                send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
+                continue
+            chats_count = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
+            texts_count = conn.execute("SELECT COUNT(*) FROM user_texts").fetchone()[0]
+            active_status = "запущен" if get_active() else "остановлен"
+            send_msg(peer_id, f"чатов: {chats_count}\nтекстов: {texts_count}\nстатус: {active_status}\nинтервал: {get_interval()}с")
+            continue
 
-        if first == "запросы":
+        # Проверка бана
+        if role == "заблокирован":
+            ban_info = conn.execute("SELECT ban_until, ban_reason FROM users WHERE user_id=?", (uid,)).fetchone()
+            if ban_info and ban_info[0] >= 9999999990:
+                send_msg(peer_id, f"вы заблокированы навсегда\nпричина: {ban_info[1]}")
+            elif ban_info and ban_info[0] > time.time():
+                tz_moscow = timezone(td(hours=3))
+                unban = datetime.fromtimestamp(ban_info[0], tz=tz_moscow).strftime('%d.%m.%Y %H:%M')
+                send_msg(peer_id, f"вы заблокированы до {unban} МСК\nпричина: {ban_info[1]}")
+            else:
+                send_msg(peer_id, "вы заблокированы")
+            continue
+
+        if role not in ALLOWED:
+            send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
+            continue
+
+        # === КОМАНДЫ ===
+
+        if first in ["запросы"]:
             if role != "разработчик":
                 send_msg(peer_id, "только разработчик")
                 continue
-            reqs = conn.execute("SELECT user_id, requests FROM users WHERE requests > 0 ORDER BY requests DESC LIMIT 10").fetchall()
+            reqs = conn.execute("SELECT user_id FROM users WHERE requests > 0 LIMIT 10").fetchall()
             if reqs:
-                txt = "запросы:\n" + "\n".join([f"[id{r[0]}|ID{r[0]}]: {r[1]}" for r in reqs])
+                txt = "запросы:\n" + "\n".join([f"[id{r[0]}|ID{r[0]}]" for r in reqs])
             else:
                 txt = "нет запросов"
             send_msg(peer_id, txt)
             continue
 
-        if role == "заблокирован":
-            send_msg(peer_id, "вы заблокированы в боте")
-            continue
-        if role not in ALLOWED:
-            send_msg(peer_id, "нет доступа. чтобы получить - добавьте бота в 3 пиар чата от 200 человек и отпишите @dimo4kaenergy")
-            continue
-
-        if first == "delacc":
-            if len(parts) < 2:
-                send_msg(peer_id, "использование: delacc (ID)")
-                continue
+        if first in ["delacc"]:
             if role != "разработчик":
                 send_msg(peer_id, "только разработчик")
                 continue
             target_id = None
-            if parts[1].isdigit():
-                target_id = int(parts[1])
-            elif '[id' in parts[1]:
-                match = re.search(r'\[id(\d+)', parts[1])
-                if match: target_id = int(match.group(1))
+            if len(parts) > 1:
+                if parts[1].isdigit():
+                    target_id = int(parts[1])
+                elif '[id' in parts[1]:
+                    match = re.search(r'\[id(\d+)', parts[1])
+                    if match: target_id = int(match.group(1))
             if target_id:
                 conn.execute("DELETE FROM users WHERE user_id=?", (target_id,))
+                conn.execute("DELETE FROM user_texts WHERE user_id=?", (target_id,))
                 conn.commit()
-                send_msg(peer_id, f"пользователь {target_id} удален из базы")
+                send_msg(peer_id, f"пользователь {target_id} удалён")
             else:
                 send_msg(peer_id, "delacc (ID)")
             continue
 
-        if first == "//scan" or first == "scan":
+        if first in ["//ban", "ban"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            if len(parts) < 3:
+                send_msg(peer_id, "использование: //ban (срок) (ссылка/ID) (причина)\n-1 навсегда, 0 разбан, 1-365 дни")
+                continue
+            try:
+                days = int(parts[1])
+            except:
+                send_msg(peer_id, "срок числом: -1 навсегда, 0 разбан, 1-365 дни")
+                continue
+            target_id = None
+            target_text = parts[2]
+            if target_text.isdigit():
+                target_id = int(target_text)
+            elif 'vk.com/' in target_text or 'vk.ru/' in target_text:
+                screen_name = target_text.split('/')[-1].strip()
+                try:
+                    res = vk.utils.resolveScreenName(screen_name=screen_name)
+                    if res and res['type'] == 'user': target_id = res['object_id']
+                except: pass
+            elif '[id' in target_text:
+                match = re.search(r'\[id(\d+)', target_text)
+                if match: target_id = int(match.group(1))
+            if not target_id:
+                send_msg(peer_id, "пользователь не найден")
+                continue
+            reason = " ".join(parts[3:]) if len(parts) > 3 else "не указана"
+            if days == 0:
+                conn.execute("UPDATE users SET ban_until=0, ban_reason='', ban_by='' WHERE user_id=?", (target_id,))
+                conn.commit()
+                try: send_msg(target_id, "вы разблокированы в пиар боте")
+                except: pass
+                send_msg(peer_id, f"пользователь {target_id} разблокирован")
+            elif days == -1:
+                conn.execute("UPDATE users SET ban_until=9999999999, ban_reason=?, ban_by=? WHERE user_id=?", (reason, str(uid), target_id))
+                conn.commit()
+                try: send_msg(target_id, f"вы заблокированы навсегда\nпричина: {reason}")
+                except: pass
+                send_msg(peer_id, f"пользователь {target_id} заблокирован навсегда")
+            elif 1 <= days <= 365:
+                ban_until = time.time() + (days * 86400)
+                conn.execute("UPDATE users SET ban_until=?, ban_reason=?, ban_by=? WHERE user_id=?", (ban_until, reason, str(uid), target_id))
+                conn.commit()
+                tz_moscow = timezone(td(hours=3))
+                unban_date = datetime.fromtimestamp(ban_until, tz=tz_moscow).strftime('%d.%m.%Y %H:%M')
+                try: send_msg(target_id, f"вы заблокированы на {days} дн. до {unban_date} МСК\nпричина: {reason}")
+                except: pass
+                send_msg(peer_id, f"заблокирован на {days} дн. до {unban_date} МСК")
+            else:
+                send_msg(peer_id, "срок от 1 до 365, -1 навсегда, 0 разбан")
+            continue
+
+        if first in ["//banlist", "banlist"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            now_ts2 = time.time()
+            bans = conn.execute("SELECT user_id, ban_until, ban_reason FROM users WHERE ban_until > ? ORDER BY ban_until DESC", (now_ts2,)).fetchall()
+            if bans:
+                tz_moscow = timezone(td(hours=3))
+                txt = "заблокированные:\n\n"
+                for b in bans:
+                    if b[1] >= 9999999990:
+                        until_str = "навсегда"
+                    else:
+                        until_str = "до " + datetime.fromtimestamp(b[1], tz=tz_moscow).strftime('%d.%m.%Y %H:%M')
+                    txt += f"[id{b[0]}|ID{b[0]}]: {until_str} | {b[2]}\n"
+            else:
+                txt = "нет заблокированных"
+            send_msg(peer_id, txt)
+            continue
+
+        if first in ["sms"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            if len(parts) < 3:
+                send_msg(peer_id, "sms (ссылка/ID) (сообщение)")
+                continue
+            target_text = parts[1]
+            msg_text = " ".join(parts[2:])
+            target_id = None
+            if target_text.isdigit():
+                target_id = int(target_text)
+            elif 'vk.com/' in target_text or 'vk.ru/' in target_text:
+                screen_name = target_text.split('/')[-1].strip()
+                try:
+                    res = vk.utils.resolveScreenName(screen_name=screen_name)
+                    if res and res['type'] == 'user': target_id = res['object_id']
+                except: pass
+            elif '[id' in target_text:
+                match = re.search(r'\[id(\d+)', target_text)
+                if match: target_id = int(match.group(1))
+            if target_id:
+                try:
+                    vk.messages.send(user_id=target_id, message=msg_text, random_id=0)
+                    send_msg(peer_id, f"отправлено {target_id}")
+                except Exception as e:
+                    send_msg(peer_id, f"ошибка: {e}")
+            else:
+                send_msg(peer_id, "не найден. укажите ссылку vk.com/имя или ID")
+            continue
+
+        if first in ["//scan", "scan"]:
             try:
                 convs = vk.messages.getConversations(count=200)
                 added = 0
@@ -229,7 +341,7 @@ for event in longpoll.listen():
                 send_msg(peer_id, f"ошибка: {e}")
             continue
 
-        if first == "//dl" or first == "dl":
+        if first in ["//dl", "dl"]:
             chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
             removed = 0
             for chat in chats:
@@ -242,20 +354,11 @@ for event in longpoll.listen():
             send_msg(peer_id, f"удалено {removed} недоступных чатов")
             continue
 
-        if first == "//chts" or first == "chts":
-            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
-            if chats:
-                txt = "чаты (" + str(len(chats)) + "):\n" + "\n".join([str(c[0]) for c in chats])
-            else:
-                txt = "нет чатов"
-            send_msg(peer_id, txt)
-            continue
-
-        if first == "//chatid" or first == "chatid":
+        if first in ["//chatid", "chatid"]:
             send_msg(peer_id, f"ID: {peer_id}")
             continue
 
-        if first in ["стафф", ".стафф", "staff", ".staff", "админы", ".админы"]:
+        if first in ["стафф", "staff", "админы"]:
             staff = conn.execute("SELECT user_id, role FROM users WHERE role IN ('разработчик', 'тех.администратор', 'администратор') ORDER BY CASE role WHEN 'разработчик' THEN 1 WHEN 'тех.администратор' THEN 2 WHEN 'администратор' THEN 3 END").fetchall()
             if staff:
                 txt = "👥 СТАФФ:\n\n"
@@ -272,17 +375,19 @@ for event in longpoll.listen():
             send_msg(peer_id, txt)
             continue
 
-        if first == "//users" or first == "users":
-            users = conn.execute("SELECT user_id, role FROM users WHERE role = 'пользователь' ORDER BY user_id LIMIT 50").fetchall()
+        if first in ["users"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            users = conn.execute("SELECT user_id FROM users WHERE role='пользователь' LIMIT 50").fetchall()
             if users:
-                txt = "пользователи (" + str(len(users)) + "):\n" + "\n".join([f"[id{u[0]}|ID{u[0]}]" for u in users])
+                txt = "пользователи:\n" + "\n".join([f"[id{u[0]}|ID{u[0]}]" for u in users])
             else:
                 txt = "нет пользователей"
             send_msg(peer_id, txt)
             continue
 
-        
-        if first == "чаты":
+        if first in ["чаты"]:
             chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
             if chats:
                 txt = "чаты:\n"
@@ -298,70 +403,101 @@ for event in longpoll.listen():
                 send_msg(peer_id, "нет чатов")
             continue
 
-        if first == "//info" or first == "info":
+        if first in ["инфо", "info"]:
             chats_count = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
-            texts_count = conn.execute("SELECT COUNT(*) FROM texts").fetchone()[0]
-            interval = get_interval()
-            sent_total = texts_count * chats_count if texts_count and chats_count else 0
-            send_msg(peer_id, f"статус: {'запущен' if get_active() else 'остановлен'}\nинтервал: {interval}с\nчатов: {chats_count}\nтекстов: {texts_count}\nотправлено за цикл: {sent_total}")
-            continue
-
-        if first == "инфо":
-            chats_count = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
-            texts_count = conn.execute("SELECT COUNT(*) FROM texts").fetchone()[0]
+            texts_count = conn.execute("SELECT COUNT(*) FROM user_texts").fetchone()[0]
             active_status = "запущен" if get_active() else "остановлен"
             send_msg(peer_id, f"статус: {active_status}\nинтервал: {get_interval()}с\nчатов: {chats_count}\nтекстов: {texts_count}")
             continue
 
-        if first == "пиар":
+        if first in ["стата", "профиль", "проф", "profile"]:
+            target_uid = uid
+            if len(parts) > 1:
+                tgt = parts[1]
+                if tgt.isdigit():
+                    target_uid = int(tgt)
+                elif '[id' in tgt:
+                    match = re.search(r'\[id(\d+)', tgt)
+                    if match: target_uid = int(match.group(1))
+            target_role = get_role(target_uid)
+            reqs = conn.execute("SELECT reg_date FROM users WHERE user_id=?", (target_uid,)).fetchone()
+            reg_date = reqs[0] if reqs else "неизвестно"
+            try:
+                u = vk.users.get(user_ids=target_uid)[0]
+                name = f"{u['first_name']} {u['last_name']}"
+            except:
+                name = f"ID {target_uid}"
+            send_msg(peer_id, f"👤 {name}\n🆔 ID: {target_uid}\n🔰 Роль: {target_role}\n📅 Регистрация: {reg_date}")
+            continue
+
+        if first in ["пиар"]:
             if len(parts) < 2:
-                send_msg(peer_id, "использование: пиар (текст)")
+                send_msg(peer_id, "пиар (текст)")
                 continue
             t = " ".join(parts[1:])
-            conn.execute("INSERT INTO texts (text) VALUES (?)", (t,))
+            conn.execute("INSERT INTO user_texts (user_id, text) VALUES (?, ?)", (uid, t))
             conn.commit()
             send_msg(peer_id, "добавлено")
-        elif first == "список":
-            texts = conn.execute("SELECT id, text FROM texts").fetchall()
-            if texts:
-                txt = "тексты:\n" + "\n".join([f"{t[0]}. {t[1][:50]}" for t in texts])
+            continue
+
+        if first in ["список"]:
+            if role == "разработчик":
+                texts = conn.execute("SELECT id, text, user_id FROM user_texts").fetchall()
+                if texts:
+                    txt = "тексты (все):\n" + "\n".join([f"{t[0]}. [id{t[2]}|ID{t[2]}]: {t[1][:50]}" for t in texts])
+                else:
+                    txt = "нет текстов"
             else:
-                txt = "нет текстов"
+                texts = conn.execute("SELECT id, text FROM user_texts WHERE user_id=?", (uid,)).fetchall()
+                if texts:
+                    txt = "ваши тексты:\n" + "\n".join([f"{t[0]}. {t[1][:50]}" for t in texts])
+                else:
+                    txt = "нет текстов"
             send_msg(peer_id, txt)
-        elif first == "удалить":
+            continue
+
+        if first in ["удалить"]:
             if len(parts) < 2:
-                send_msg(peer_id, "использование: удалить (номер)")
+                send_msg(peer_id, "удалить (номер)")
                 continue
             try:
                 tid = int(parts[1])
-                conn.execute("DELETE FROM texts WHERE id=?", (tid,))
+                if role == "разработчик":
+                    conn.execute("DELETE FROM user_texts WHERE id=?", (tid,))
+                else:
+                    conn.execute("DELETE FROM user_texts WHERE id=? AND user_id=?", (tid, uid))
                 conn.commit()
                 send_msg(peer_id, "удалено")
             except:
                 send_msg(peer_id, "ошибка")
-        elif first == "интервал":
+            continue
+
+        if first in ["интервал"]:
             if len(parts) < 2:
-                send_msg(peer_id, "использование: интервал (секунды)")
+                send_msg(peer_id, "интервал (секунды)")
                 continue
             try:
                 val = int(parts[1])
                 conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES ('interval',?)", (str(val),))
                 conn.commit()
-                send_msg(peer_id, f"интервал: {parts[1]}с")
+                send_msg(peer_id, f"интервал: {val}с")
             except:
                 send_msg(peer_id, "ошибка")
-        elif first == "стоп":
+            continue
+
+        if first in ["стоп"]:
             conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES ('active','0')")
             conn.commit()
             send_msg(peer_id, "пиар остановлен")
-        elif first == "старт":
+            continue
+
+        if first in ["старт"]:
             conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES ('active','1')")
             conn.commit()
             send_msg(peer_id, "пиар запущен")
-        elif first == "чат":
-            if len(parts) < 2 and peer_id <= 2000000000:
-                send_msg(peer_id, "использование: чат (ID)")
-                continue
+            continue
+
+        if first in ["чат"]:
             if len(parts) > 1:
                 try:
                     chat_id = int(parts[1])
@@ -392,48 +528,27 @@ for event in longpoll.listen():
                     conn.commit()
                     send_msg(peer_id, "чат добавлен")
             else:
-                send_msg(peer_id, "чат (ID) - укажите ID чата")
-        elif first == "стата":
-            target_uid = uid
-            if len(parts) > 1:
-                target_text = parts[1]
-                if target_text.isdigit():
-                    target_uid = int(target_text)
-                elif "[id" in target_text:
-                    match = re.search(r"\[id(\d+)", target_text)
-                    if match: target_uid = int(match.group(1))
-            target_role = get_role(target_uid)
-            reqs = conn.execute("SELECT requests, reg_date FROM users WHERE user_id=?", (target_uid,)).fetchone()
-            reg_date = reqs[1] if reqs and len(reqs) > 1 else "неизвестно"
-            try:
-                u = vk.users.get(user_ids=target_uid)[0]
-                name = f"{u['first_name']} {u['last_name']}"
-            except:
-                name = f"ID {target_uid}"
-            send_msg(peer_id, f"👤 {name}\n🆔 ID: {target_uid}\n🔰 Роль: {target_role}\n📅 Регистрация: {reg_date}")
-        elif first == "помощь":
-            send_msg(peer_id, "команды пиар бота:\n\n📝 пиар (текст) — добавить текст\n📋 список — все тексты\n🗑 удалить (номер) — удалить текст\n⏱ интервал (секунды) — частота\n📊 инфо — статус и статистика\n⏹ стоп — остановить пиар\n▶️ старт — запустить пиар\n💬 чат (ID) — добавить чат\n📋 чаты — список чатов\n🔍 scan — найти чаты\n🗑 //dl — удалить недоступные\n🆔 chatid — ID чата\n👤 стата (ID) — статистика\n👥 стафф — администрация\n👥 users — пользователи\n📩 запросы — запросы доступа\n🔑 //rang (ID) (ранг) — выдать роль\n❌ delacc (ID) — удалить пользователя\n❓ помощь — это сообщение")
-        elif first in ["rang", "//rang"]:
+                send_msg(peer_id, "чат (ID)")
+            continue
+
+        if first in ["rang", "//rang"]:
             if role != "разработчик":
                 send_msg(peer_id, "только разработчик")
                 continue
-            # rang (ранг) (юзер)
-            if len(parts) < 2:
-                send_msg(peer_id, "использование: rang (ранг) (ID/@user)\n-1 блок, 0 снять, 1 доступ, 2 админ, 3 тех.админ, 4 разраб")
+            if len(parts) < 3:
+                send_msg(peer_id, "rang (ранг) (ID/@user)\n-1 блок, 0 снять, 1 доступ, 2 админ, 3 тех.админ, 4 разраб")
                 continue
             try:
                 rank = int(parts[1])
             except:
+                send_msg(peer_id, "ранг числом: -1, 0, 1, 2, 3, 4")
                 continue
             if rank not in [-1, 0, 1, 2, 3, 4]:
                 send_msg(peer_id, "-1 блок, 0 снять, 1 доступ, 2 админ, 3 тех.админ, 4 разраб")
                 continue
             target_id = None
-            target_text = parts[2] if len(parts) > 2 else ""
-            if not target_text:
-                send_msg(peer_id, "укажите пользователя: rang (ранг) (ID/@user)")
-                continue
-            if target_text.lower() == 'dimo4kaenergy' or target_text.lower() == '@dimo4kaenergy':
+            target_text = parts[2]
+            if target_text.lower() in ['dimo4kaenergy', '@dimo4kaenergy']:
                 target_id = 827888215
             elif target_text.isdigit():
                 target_id = int(target_text)
@@ -445,15 +560,24 @@ for event in longpoll.listen():
                 continue
             if rank == -1:
                 set_role(target_id, "заблокирован")
-                send_msg(target_id, "вы заблокированы в пиар боте")
-                send_msg(peer_id, "пользователь заблокирован")
+                conn.execute("UPDATE users SET ban_until=9999999999, ban_reason='заблокирован разработчиком' WHERE user_id=?", (target_id,))
+                conn.commit()
+                try: send_msg(target_id, "вы заблокированы в пиар боте")
+                except: pass
+                send_msg(peer_id, "заблокирован")
             elif rank == 0:
                 set_role(target_id, "нет_доступа")
-                send_msg(target_id, "ваш доступ был снят")
-                send_msg(peer_id, "доступ снят")
+                conn.execute("UPDATE users SET requests=0, ban_until=0 WHERE user_id=?", (target_id,))
+                conn.commit()
+                try: send_msg(target_id, "разработчик отказал вам в доступе")
+                except: pass
+                send_msg(peer_id, "доступ снят, пользователю отправлен отказ")
             elif rank == 1:
                 set_role(target_id, "пользователь")
-                send_msg(target_id, "вам успешно одобрили доступ к пиар боту")
+                conn.execute("UPDATE users SET requests=0, ban_until=0 WHERE user_id=?", (target_id,))
+                conn.commit()
+                try: send_msg(target_id, "вам одобрили доступ к пиар боту")
+                except: pass
                 send_msg(peer_id, "доступ выдан")
             elif rank == 2:
                 set_role(target_id, "администратор")
@@ -464,8 +588,6 @@ for event in longpoll.listen():
             elif rank == 4:
                 set_role(target_id, "разработчик")
                 send_msg(peer_id, "выдан разработчик")
-            conn.execute("UPDATE users SET requests=0 WHERE user_id=?", (target_id,))
-            conn.commit()
             continue
 
 
