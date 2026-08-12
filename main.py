@@ -7,6 +7,31 @@ import threading
 import random
 import re
 import json
+
+def parse_user_id(text):
+    """Парсит ID из ссылки, упоминания, скриннейма или числа"""
+    text = text.strip()
+    # vk.com/ или vk.ru/
+    if 'vk.com/' in text or 'vk.ru/' in text:
+        text = text.split('/')[-1].strip().replace(']', '').replace('[', '')
+    # @user
+    if text.startswith('@'):
+        text = text[1:]
+    # [id123|...]
+    if '[id' in text:
+        match = re.search(r'\[id(\d+)', text)
+        if match: return int(match.group(1))
+    # Просто число
+    if text.isdigit():
+        return int(text)
+    # Скриннейм
+    try:
+        res = vk.utils.resolveScreenName(screen_name=text)
+        if res and res['type'] == 'user':
+            return res['object_id']
+    except:
+        pass
+    return None
 import config
 from datetime import datetime, timezone, timedelta as td
 
@@ -205,11 +230,7 @@ for event in longpoll.listen():
                 continue
             target_id = None
             if len(parts) > 1:
-                if parts[1].isdigit():
-                    target_id = int(parts[1])
-                elif '[id' in parts[1]:
-                    match = re.search(r'\[id(\d+)', parts[1])
-                    if match: target_id = int(match.group(1))
+                target_id = parse_user_id(parts[1])
             if target_id:
                 conn.execute("DELETE FROM users WHERE user_id=?", (target_id,))
                 conn.execute("DELETE FROM user_texts WHERE user_id=?", (target_id,))
@@ -231,19 +252,7 @@ for event in longpoll.listen():
             except:
                 send_msg(peer_id, "срок числом: -1 навсегда, 0 разбан, 1-365 дни")
                 continue
-            target_id = None
-            target_text = parts[2]
-            if target_text.isdigit():
-                target_id = int(target_text)
-            elif 'vk.com/' in target_text or 'vk.ru/' in target_text:
-                screen_name = target_text.split('/')[-1].strip()
-                try:
-                    res = vk.utils.resolveScreenName(screen_name=screen_name)
-                    if res and res['type'] == 'user': target_id = res['object_id']
-                except: pass
-            elif '[id' in target_text:
-                match = re.search(r'\[id(\d+)', target_text)
-                if match: target_id = int(match.group(1))
+            target_id = parse_user_id(parts[2])
             if not target_id:
                 send_msg(peer_id, "пользователь не найден")
                 continue
@@ -302,18 +311,7 @@ for event in longpoll.listen():
                 continue
             target_text = parts[1]
             msg_text = " ".join(parts[2:])
-            target_id = None
-            if target_text.isdigit():
-                target_id = int(target_text)
-            elif 'vk.com/' in target_text or 'vk.ru/' in target_text:
-                screen_name = target_text.split('/')[-1].strip()
-                try:
-                    res = vk.utils.resolveScreenName(screen_name=screen_name)
-                    if res and res['type'] == 'user': target_id = res['object_id']
-                except: pass
-            elif '[id' in target_text:
-                match = re.search(r'\[id(\d+)', target_text)
-                if match: target_id = int(match.group(1))
+            target_id = parse_user_id(target_text)
             if target_id:
                 try:
                     vk.messages.send(user_id=target_id, message=msg_text, random_id=0)
@@ -413,12 +411,8 @@ for event in longpoll.listen():
         if first in ["стата", "профиль", "проф", "profile"]:
             target_uid = uid
             if len(parts) > 1:
-                tgt = parts[1]
-                if tgt.isdigit():
-                    target_uid = int(tgt)
-                elif '[id' in tgt:
-                    match = re.search(r'\[id(\d+)', tgt)
-                    if match: target_uid = int(match.group(1))
+                parsed = parse_user_id(parts[1])
+                if parsed: target_uid = parsed
             target_role = get_role(target_uid)
             reqs = conn.execute("SELECT reg_date FROM users WHERE user_id=?", (target_uid,)).fetchone()
             reg_date = reqs[0] if reqs else "неизвестно"
@@ -546,15 +540,7 @@ for event in longpoll.listen():
             if rank not in [-1, 0, 1, 2, 3, 4]:
                 send_msg(peer_id, "-1 блок, 0 снять, 1 доступ, 2 админ, 3 тех.админ, 4 разраб")
                 continue
-            target_id = None
-            target_text = parts[2]
-            if target_text.lower() in ['dimo4kaenergy', '@dimo4kaenergy']:
-                target_id = 827888215
-            elif target_text.isdigit():
-                target_id = int(target_text)
-            elif '[id' in target_text:
-                match = re.search(r'\[id(\d+)', target_text)
-                if match: target_id = int(match.group(1))
+            target_id = parse_user_id(parts[2])
             if not target_id:
                 send_msg(peer_id, "пользователь не найден")
                 continue
