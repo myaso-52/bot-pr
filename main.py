@@ -100,6 +100,14 @@ def send_msg(peer_id, text, keyboard=None):
         else:
             print(f"ошибка отправки: {e}")
 
+def get_main_keyboard():
+    kb = VkKeyboard(one_time=False)
+    kb.add_button("Помощь", color=VkKeyboardColor.PRIMARY)
+    kb.add_button("Статистика", color=VkKeyboardColor.PRIMARY)
+    kb.add_line()
+    kb.add_button("Запросить доступ", color=VkKeyboardColor.POSITIVE)
+    return kb.get_keyboard()
+
 def piar_loop():
     while True:
         if get_active():
