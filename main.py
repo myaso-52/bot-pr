@@ -151,6 +151,9 @@ for event in longpoll.listen():
         last_msg = (message_obj['text'], message_obj['from_id'], now_ts)
         peer_id = message_obj['peer_id']
         uid = message_obj['from_id']
+        # Отвечаем только в ЛС
+        if peer_id != uid:
+            continue
         text = message_obj['text'].strip()
         role = get_role(uid)
         print(f"[{uid}|{role}] {text}")
@@ -425,6 +428,18 @@ for event in longpoll.listen():
                 txt = "пользователи:\n" + "\n".join([f"[id{u[0]}|ID{u[0]}]" for u in users])
             else:
                 txt = "нет пользователей"
+            send_msg(peer_id, txt)
+            continue
+
+        if first in ["//chts", "chts"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            if chats:
+                txt = "чаты (" + str(len(chats)) + "):\n\n" + "\n".join([str(c[0]) for c in chats]) + f"\n\nВсего: {len(chats)}"
+            else:
+                txt = "нет чатов"
             send_msg(peer_id, txt)
             continue
 
