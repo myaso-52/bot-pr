@@ -1,5 +1,5 @@
 import vk_api
-from vk_api.longpoll import VkLongPoll, VkEventType
+from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 import sqlite3
 import time
@@ -35,9 +35,10 @@ def parse_user_id(text):
 import config
 from datetime import datetime, timezone, timedelta as td
 
-vk_session = vk_api.VkApi(token=config.TOKEN)
+vk_session = vk_api.VkApi(token=config.TOKEN, api_version="5.199")
 vk = vk_session.get_api()
-longpoll = VkLongPoll(vk_session)
+vk = vk_session.get_api()
+longpoll = VkBotLongPoll(vk_session, 240839587)
 
 conn = sqlite3.connect("pr.db", check_same_thread=False)
 conn.execute("CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY, active INTEGER DEFAULT 1)")
@@ -107,7 +108,7 @@ def piar_loop():
             if user_texts and chats:
                 for uid_text, t in user_texts:
                     kb = VkKeyboard(inline=True)
-                    kb.add_openlink_button("Залутать", link="https://vk.ru/write-221392393?ref=827888215")
+                    kb.add_openlink_button("Откликнуться", link="https://vk.ru/write-240839587?ref=827888215")
                     for chat in chats:
                         send_msg(chat[0], t, keyboard=kb.get_keyboard())
                     time.sleep(1)
@@ -132,14 +133,15 @@ print("бот пиара запущен")
 
 last_msg = ("", 0, 0)
 for event in longpoll.listen():
-    if event.type == VkEventType.MESSAGE_NEW and event.to_me:
+    if event.type == VkBotEventType.MESSAGE_NEW and event.obj.message:
+        message_obj = event.obj.message
         now_ts = time.time()
-        if event.text == last_msg[0] and event.user_id == last_msg[1] and now_ts - last_msg[2] < 3:
+        if message_obj['text'] == last_msg[0] and message_obj['from_id'] == last_msg[1] and now_ts - last_msg[2] < 3:
             continue
-        last_msg = (event.text, event.user_id, now_ts)
-        peer_id = event.peer_id
-        uid = event.user_id
-        text = event.text.strip()
+        last_msg = (message_obj['text'], message_obj['from_id'], now_ts)
+        peer_id = message_obj['peer_id']
+        uid = message_obj['from_id']
+        text = message_obj['text'].strip()
         role = get_role(uid)
         print(f"[{uid}|{role}] {text}")
 
@@ -172,14 +174,14 @@ for event in longpoll.listen():
             continue
 
         # Помощь
-        if first in ["помощь", "хелп", "help", "начать", "меню", "привет", "старт"]:
+        if first in ["помощь", "хелп", "help", "начать", "меню", "привет"]:
             if role not in ALLOWED:
                 send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
                 continue
             help_text = "📋 КОМАНДЫ ПИАР БОТА:\n\n📝 пиар (текст) - добавить текст\n📋 список - ваши тексты\n🗑 удалить (номер) - удалить текст\n⏱ интервал (сек) - частота\n📊 инфо - статус\n⏹ стоп - остановить\n▶️ старт - запустить\n💬 чат (ID) - добавить чат\n📋 чаты - список чатов\n🔍 scan - найти чаты\n🗑 //dl - удалить недоступные\n🆔 chatid - ID чата\n👤 стата (ID) - профиль"
             if role == "разработчик":
                 help_text += "\n\n🔧 ДЛЯ РАЗРАБОТЧИКА:\n👥 стафф - администрация\n👥 users - пользователи\n📩 запросы - запросы\n🔑 rang (ранг) (ID) - роль\n📨 sms (ссылка) (текст) - смс\n🔨 //ban (срок) (ссылка) (причина)\n📋 //banlist - список банов\n❌ delacc (ID) - удалить"
-            send_msg(peer_id, help_text)
+            send_msg(peer_id, help_text, keyboard=get_main_keyboard())
             continue
 
         # Статистика
@@ -238,6 +240,27 @@ for event in longpoll.listen():
                 send_msg(peer_id, f"пользователь {target_id} удалён")
             else:
                 send_msg(peer_id, "delacc (ID)")
+            continue
+
+        if first in ["//ud", "ud"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            if len(parts) < 2:
+                send_msg(peer_id, "//ud (ID текста)\nСписок: список")
+                continue
+            try:
+                tid = int(parts[1])
+            except:
+                send_msg(peer_id, "ID текста числом")
+                continue
+            row = conn.execute("SELECT id, user_id, text FROM user_texts WHERE id=?", (tid,)).fetchone()
+            if not row:
+                send_msg(peer_id, "текст не найден")
+                continue
+            conn.execute("DELETE FROM user_texts WHERE id=?", (tid,))
+            conn.commit()
+            send_msg(peer_id, f"удалён текст #{tid}: {row[2][:40]}\nвладелец: [id{row[1]}|ID{row[1]}]")
             continue
 
         if first in ["//ban", "ban"]:
@@ -339,6 +362,16 @@ for event in longpoll.listen():
                 send_msg(peer_id, f"ошибка: {e}")
             continue
 
+        if first in ["//cht", "cht"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            total = conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]
+            active = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
+            inactive = total - active
+            send_msg(peer_id, f"💬 Всего чатов: {total}\n✅ Активных: {active}\n❌ Удалённых/неактивных: {inactive}")
+            continue
+
         if first in ["//dl", "dl"]:
             chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
             removed = 0
@@ -346,10 +379,10 @@ for event in longpoll.listen():
                 try:
                     vk.messages.send(peer_id=chat[0], message=".", random_id=0)
                 except:
-                    conn.execute("DELETE FROM chats WHERE id=?", (chat[0],))
+                    conn.execute("UPDATE chats SET active=0 WHERE id=?", (chat[0],))
                     removed += 1
             conn.commit()
-            send_msg(peer_id, f"удалено {removed} недоступных чатов")
+            send_msg(peer_id, f"✅ Отключено {removed} недоступных чатов\n\n//cht — посмотреть статистику")
             continue
 
         if first in ["//chatid", "chatid"]:
