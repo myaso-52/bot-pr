@@ -83,7 +83,9 @@ def get_interval():
 
 def get_active():
     row = conn.execute("SELECT value FROM settings WHERE key='active'").fetchone()
-    return row[0] == '1' if row else True
+    if row:
+        return row[0] == '1'
+    return False
 
 def send_msg(peer_id, text, keyboard=None):
     try:
