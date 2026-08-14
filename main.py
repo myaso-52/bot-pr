@@ -118,7 +118,7 @@ def piar_loop():
             if user_texts and chats:
                 for uid_text, t in user_texts:
                     kb = VkKeyboard(inline=True)
-                    kb.add_openlink_button("Откликнуться", link="https://vk.ru/write-240839587?ref=827888215")
+                    kb.add_openlink_button("Откликнуться", link="https://vk.cc/cST7LG")
                     for chat in chats:
                         send_msg(chat[0], t, keyboard=kb.get_keyboard())
                     time.sleep(1)
@@ -379,9 +379,19 @@ for event in longpoll.listen():
             if role != "разработчик":
                 send_msg(peer_id, "только разработчик")
                 continue
-            total = conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]
-            active = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
-            inactive = total - active
+            # Пересчитываем реально доступные
+            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            real_active = 0
+            real_inactive = 0
+            for c in chats:
+                try:
+                    vk.messages.getConversationsById(peer_ids=c[0])
+                    real_active += 1
+                except:
+                    real_inactive += 1
+            total = real_active + real_inactive
+            active = real_active
+            inactive = real_inactive
             send_msg(peer_id, f"💬 Всего чатов: {total}\n✅ Активных: {active}\n❌ Удалённых/неактивных: {inactive}")
             continue
 
