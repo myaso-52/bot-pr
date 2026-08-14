@@ -114,7 +114,7 @@ def piar_loop():
     while True:
         if get_active():
             user_texts = conn.execute("SELECT user_id, text FROM user_texts ORDER BY RANDOM()").fetchall()
-            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            chats = conn.execute("SELECT id FROM chats WHERE active=1 AND id >= 2000000001 AND id < 3000000000").fetchall()
             if user_texts and chats:
                 for uid_text, t in user_texts:
                     kb = VkKeyboard(inline=True)
@@ -189,7 +189,7 @@ for event in longpoll.listen():
         # Помощь
         if first in ["помощь", "хелп", "help", "начать", "меню", "привет"]:
             if role not in ALLOWED:
-                send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
+                pass
                 continue
             help_text = "📋 КОМАНДЫ ПИАР БОТА:\n\n📝 пиар (текст) - добавить текст\n📋 список - ваши тексты\n🗑 удалить (номер) - удалить текст\n⏱ интервал (сек) - частота\n📊 инфо - статус\n⏹ стоп - остановить\n▶️ старт - запустить\n💬 чат (ID) - добавить чат\n📋 чаты - список чатов\n🔍 scan - найти чаты\n🗑 //dl - удалить недоступные\n🆔 chatid - ID чата\n👤 стата (ID) - профиль"
             if role == "разработчик":
@@ -200,7 +200,7 @@ for event in longpoll.listen():
         # Статистика
         if first in ["статистика", "stats", "stat"]:
             if role not in ALLOWED:
-                send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
+                pass
                 continue
             chats_count = conn.execute("SELECT COUNT(*) FROM chats WHERE active=1").fetchone()[0]
             texts_count = conn.execute("SELECT COUNT(*) FROM user_texts").fetchone()[0]
@@ -222,7 +222,7 @@ for event in longpoll.listen():
             continue
 
         if role not in ALLOWED:
-            send_msg(peer_id, "чтобы получить доступ к пиар боту нужно добавить это сообщество в 5 пиар чатов (от 200 человек), а потом отписать @dimo4kaenergy и запросить доступ")
+            pass
             continue
 
         # === КОМАНДЫ ===
@@ -338,6 +338,36 @@ for event in longpoll.listen():
             send_msg(peer_id, txt)
             continue
 
+        if first in ["//рассылка", "рассылка"]:
+            if role != "разработчик":
+                send_msg(peer_id, "только разработчик")
+                continue
+            if len(parts) < 2:
+                send_msg(peer_id, "❌ Использование: //рассылка (текст)\n\nПример: //рассылка Всем привет! Заходите в бота!")
+                continue
+            text = " ".join(text.split()[1:])
+            users = conn.execute("SELECT user_id FROM users WHERE user_id > 0").fetchall()
+            # Добавляем подписчиков
+            try:
+                subs = vk.groups.getMembers(group_id=240839587, count=1000)
+                for sub in subs['items']:
+                    if (sub,) not in users:
+                        users.append((sub,))
+            except:
+                pass
+            sent = 0
+            failed = 0
+            send_msg(peer_id, f"📨 Начинаю рассылку на {len(users)} пользователей...")
+            for u in users:
+                try:
+                    vk.messages.send(peer_id=u[0], message=text, random_id=0)
+                    sent += 1
+                    time.sleep(0.3)
+                except:
+                    failed += 1
+            send_msg(peer_id, f"✅ Рассылка завершена!\nОтправлено: {sent}\nОшибок: {failed}")
+            continue
+
         if first in ["sms"]:
             if role != "разработчик":
                 send_msg(peer_id, "только разработчик")
@@ -380,7 +410,7 @@ for event in longpoll.listen():
                 send_msg(peer_id, "только разработчик")
                 continue
             # Пересчитываем реально доступные
-            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            chats = conn.execute("SELECT id FROM chats WHERE active=1 AND id >= 2000000001 AND id < 3000000000").fetchall()
             real_active = 0
             real_inactive = 0
             for c in chats:
@@ -396,7 +426,7 @@ for event in longpoll.listen():
             continue
 
         if first in ["//dl", "dl"]:
-            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            chats = conn.execute("SELECT id FROM chats WHERE active=1 AND id >= 2000000001 AND id < 3000000000").fetchall()
             removed = 0
             for chat in chats:
                 try:
@@ -445,7 +475,7 @@ for event in longpoll.listen():
             if role != "разработчик":
                 send_msg(peer_id, "только разработчик")
                 continue
-            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            chats = conn.execute("SELECT id FROM chats WHERE active=1 AND id >= 2000000001 AND id < 3000000000").fetchall()
             if chats:
                 txt = "чаты (" + str(len(chats)) + "):\n\n" + "\n".join([str(c[0]) for c in chats]) + f"\n\nВсего: {len(chats)}"
             else:
@@ -454,7 +484,7 @@ for event in longpoll.listen():
             continue
 
         if first in ["чаты"]:
-            chats = conn.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            chats = conn.execute("SELECT id FROM chats WHERE active=1 AND id >= 2000000001 AND id < 3000000000").fetchall()
             if chats:
                 txt = "чаты:\n"
                 for c in chats:
